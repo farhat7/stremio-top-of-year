@@ -1,6 +1,6 @@
 # Top of the Year — Stremio catalog
 
-Two Stremio home-screen rows: **Top Movies of the Year** and **Top Series of the Year**,
+Stremio home-screen rows: **Top Movies/Series of the Year** and **All-Time Great Movies/Series**,
 across every streaming service.
 
 - Data: IMDb's public daily datasets (`title.ratings`, `title.basics`). No API key.
