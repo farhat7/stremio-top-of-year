@@ -16,6 +16,7 @@ import gzip
 import json
 import os
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 
 DATASETS = "https://datasets.imdbws.com/"
 MIN_VOTES = {"movie": 25000, "series": 10000}
@@ -45,6 +46,44 @@ ALLTIME_PRIOR_VOTES = {"movie": 500000, "series": 200000}
 ALLTIME_LIST_SIZE = 100
 
 
+# --- plot summaries -------------------------------------------------------
+# IMDb's public datasets carry no plot, so the catalog rows showed only year,
+# genre and rating - Stremio renders a description under a poster when the
+# addon sends one, and we never did. TMDB fills that in, looked up by IMDb id.
+# The key is optional: without it the build still succeeds, just without plots.
+TMDB_KEY = os.environ.get("TMDB_API_KEY", "")
+
+
+def fetch_overview(imdb_id):
+    """TMDB plot for one IMDb id, or '' if anything at all goes wrong."""
+    url = ("https://api.themoviedb.org/3/find/%s?api_key=%s&external_source=imdb_id"
+           % (imdb_id, TMDB_KEY))
+    try:
+        with urllib.request.urlopen(url, timeout=20) as r:
+            data = json.load(r)
+    except Exception:
+        return ""
+    hits = data.get("movie_results") or data.get("tv_results") or []
+    return (hits[0].get("overview") or "") if hits else ""
+
+
+def fetch_overviews(imdb_ids):
+    """Look the whole list up at once. 8 at a time keeps us well inside TMDB's
+    rate limit while turning ~110s of serial requests into ~15s."""
+    if not TMDB_KEY:
+        print("TMDB_API_KEY not set - building without plot summaries")
+        return {}
+    ids = sorted(set(imdb_ids))
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        texts = list(pool.map(fetch_overview, ids))
+    out = {i: t for i, t in zip(ids, texts) if t}
+    print("plots: %d of %d titles" % (len(out), len(ids)))
+    return out
+
+
+OVERVIEWS = {}
+
+
 def rank(items, prior_votes):
     """Sort by IMDb weighted rating (see module docstring)."""
     m = prior_votes
@@ -59,7 +98,7 @@ def rank(items, prior_votes):
 def write_catalog(kind, catalog_id, items):
     metas = []
     for i in items:
-        metas.append({
+        meta = {
             "id": i["id"],
             "type": kind,
             "name": i["name"],
@@ -67,7 +106,12 @@ def write_catalog(kind, catalog_id, items):
             "imdbRating": f"{i['rating']:.1f}",
             "releaseInfo": str(i["year"]),
             "genres": i["genres"],
-        })
+        }
+        # Only send the key when we actually have text; an empty description
+        # is worse than none, because Stremio reserves the space for it.
+        if OVERVIEWS.get(i["id"]):
+            meta["description"] = OVERVIEWS[i["id"]]
+        metas.append(meta)
     with open(f"site/catalog/{kind}/{catalog_id}.json", "w") as f:
         json.dump({"metas": metas}, f)
     print(kind, catalog_id, len(metas), [m["name"] for m in metas[:5]])
@@ -102,6 +146,18 @@ for row in read_tsv("title.basics.tsv.gz"):
 
 os.makedirs("site/catalog/movie", exist_ok=True)
 os.makedirs("site/catalog/series", exist_ok=True)
+
+# Work out every id that will appear in any catalog, then fetch all plots in
+# one pass - the year lists and the all-time lists overlap, so this avoids
+# asking TMDB for the same title twice.
+wanted = []
+for kind, items in candidates.items():
+    this_year_items = [i for i in items if i["year"] == this_year]
+    pool_items = this_year_items if len(this_year_items) >= MIN_LIST_SIZE else items
+    wanted += [i["id"] for i in rank(list(pool_items), PRIOR_VOTES[kind])[:LIST_SIZE]]
+for kind, items in alltime.items():
+    wanted += [i["id"] for i in rank(list(items), ALLTIME_PRIOR_VOTES[kind])[:ALLTIME_LIST_SIZE]]
+OVERVIEWS = fetch_overviews(wanted)
 
 for kind, items in candidates.items():
     this_year_items = [i for i in items if i["year"] == this_year]
