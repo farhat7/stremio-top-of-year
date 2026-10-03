@@ -28,6 +28,10 @@ jobs:
         with:
           python-version: "3.12"
       - run: python build.py
+        env:
+          # Plot summaries come from TMDB, looked up by IMDb id. Optional:
+          # without it the build still succeeds, just with no descriptions.
+          TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
